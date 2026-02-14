@@ -1,11 +1,17 @@
-name: Linux Desktop with Chrome Remote Desktop
+name: Linux Desktop with VNC and noVNC
 
 on:
   workflow_dispatch:
     inputs:
-      CRP_CODE:
-        description: 'Chrome Remote Desktop authorization code (get from https://remotedesktop.google.com/headless)'
+      VNC_PASSWORD:
+        description: 'VNC Password (min 6 chars)'
         required: true
+        default: 'password123'
+        type: string
+      SCREEN_RESOLUTION:
+        description: 'Screen resolution (e.g., 1920x1080)'
+        required: true
+        default: '1920x1080'
         type: string
 
 jobs:
@@ -17,7 +23,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install XFCE4 Desktop Environment
+      - name: Install Desktop Environment and VNC
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -26,79 +32,130 @@ jobs:
             xfce4-goodies \
             dbus-x11 \
             xfonts-base \
-            xfonts-100dpi \
-            xfonts-75dpi \
-            xfonts-cyrillic \
-            xfonts-scalable \
-            pulseaudio \
-            pavucontrol \
+            tigervnc-standalone-server \
+            tigervnc-viewer \
+            tigervnc-common \
+            novnc \
+            websockify \
             curl \
             wget \
+            net-tools \
             --no-install-recommends
           sudo apt-get clean
           sudo apt-get autoremove -y
 
-      - name: Install Chrome Remote Desktop
+      - name: Setup VNC Server
         run: |
-          wget -q https://dl.google.com/linux/direct/chrome-remote-desktop_current_amd64.deb -O /tmp/chrome-remote-desktop.deb
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/chrome-remote-desktop.deb || sudo apt-get install -fy
-          rm -f /tmp/chrome-remote-desktop.deb
+          # Create VNC config directory
+          mkdir -p ~/.vnc
+          
+          # Set VNC password
+          echo "${{ github.event.inputs.VNC_PASSWORD }}" | vncpasswd -f > ~/.vnc/passwd
+          chmod 600 ~/.vnc/passwd
+          
+          # Create xstartup script for XFCE
+          cat > ~/.vnc/xstartup << 'EOF'
+          #!/bin/bash
+          unset SESSION_MANAGER
+          unset DBUS_SESSION_BUS_ADDRESS
+          
+          # Start XFCE
+          exec startxfce4
+          EOF
+          
+          chmod +x ~/.vnc/xstartup
 
-      - name: Configure and Start Chrome Remote Desktop
+      - name: Start VNC and noVNC Servers
         run: |
-          # Create the chrome-remote-desktop group if it doesn't exist
-          sudo groupadd -f chrome-remote-desktop
+          # Kill any existing VNC sessions
+          vncserver -kill :1 2>/dev/null || true
           
-          # Add user to chrome-remote-desktop group
-          sudo usermod -a -G chrome-remote-desktop $USER
+          # Start VNC server
+          vncserver :1 \
+            -geometry ${{ github.event.inputs.SCREEN_RESOLUTION }} \
+            -depth 24 \
+            -localhost no \
+            -rfbport 5901
           
-          # Create session file for XFCE
-          echo 'xfce4-session' > ~/.chrome-remote-desktop-session
+          sleep 3
           
-          # Create necessary directories
-          mkdir -p ~/.config/chrome-remote-desktop
-          mkdir -p ~/.cache/chrome-remote-desktop
+          # Start noVNC (web-based VNC client)
+          # noVNC will be accessible on port 6080
+          websockify --web=/usr/share/novnc --cert=self.pem --key=self.pem --ssl-only --ssl-version=tlsv1_2 -D 6080 localhost:5901 &
           
-          # Start Chrome Remote Desktop with the provided code
-          export CRP_CODE="${{ github.event.inputs.CRP_CODE }}"
+          sleep 2
           
-          # Configure the host
-          DISPLAY= /opt/google/chrome-remote-desktop/start-host \
-            --code="$CRP_CODE" \
-            --redirect-url="https://remotedesktop.google.com/_/oauthredirect" \
-            --name="GitHub Actions Linux Desktop" \
-            --pin=123456
+          # Generate self-signed SSL certificate for noVNC
+          openssl req -x509 -nodes -newkey rsa:2048 \
+            -keyout ~/.vnc/novnc.pem \
+            -out ~/.vnc/novnc.pem \
+            -days 1 \
+            -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost" 2>/dev/null
+          
+          # Restart websockify with SSL
+          pkill websockify 2>/dev/null || true
+          sleep 1
+          
+          websockify --web=/usr/share/novnc \
+            --cert=$HOME/.vnc/novnc.pem \
+            --ssl-only \
+            -D \
+            6080 \
+            localhost:5901
+          
+          sleep 2
 
-      - name: Verify Chrome Remote Desktop is Running
+      - name: Setup ngrok Tunnel
         run: |
+          # Download and install ngrok
+          curl -s https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | sudo tar xz -C /usr/local/bin
+          
+          # Start ngrok tunnel for noVNC (port 6080)
+          ngrok http 6080 --log=stdout > ngrok.log 2>&1 &
+          
           sleep 10
-          echo "=== Chrome Remote Desktop Status ==="
-          ps aux | grep chrome-remote-desktop | grep -v grep || echo "Process not found"
+          
+          # Get the public URL
+          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"https://[^"]*' | grep -o 'https://[^"]*' | head -1)
+          
+          if [ -z "$NGROK_URL" ]; then
+            echo "Waiting for ngrok to start..."
+            sleep 10
+            NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"https://[^"]*' | grep -o 'https://[^"]*' | head -1)
+          fi
           
           echo ""
-          echo "=== Connection Info ==="
-          echo "Visit: https://remotedesktop.google.com/access"
-          echo "Look for: GitHub Actions Linux Desktop"
-          echo "PIN: 123456"
+          echo "========================================"
+          echo "🖥️  LINUX DESKTOP READY!"
+          echo "========================================"
+          echo ""
+          echo "🔗 Web Browser Access (noVNC):"
+          echo "   $NGROK_URL/vnc.html"
+          echo ""
+          echo "📋 Connection Details:"
+          echo "   Password: ${{ github.event.inputs.VNC_PASSWORD }}"
+          echo "   Resolution: ${{ github.event.inputs.SCREEN_RESOLUTION }}"
+          echo ""
+          echo "🖥️  VNC Client Access:"
+          echo "   Host: localhost"
+          echo "   Port: 5901"
+          echo ""
+          echo "⏱️  Session will remain active for 6 hours"
+          echo "========================================"
           echo ""
 
       - name: Keep runner alive (6 hours max)
         run: |
-          echo "🖥️ Linux Desktop is ready!"
-          echo "Connect via: https://remotedesktop.google.com/access"
-          echo "This runner will stay active for 6 hours."
-          echo ""
-          
-          # Calculate iterations: 6 hours = 21600 seconds / 10 second intervals = 2160 iterations
-          for i in $(seq 1 2160); do
-            sleep 10
+          # Calculate iterations: 6 hours = 21600 seconds / 30 second intervals = 720 iterations
+          for i in $(seq 1 720); do
+            sleep 30
             
-            # Print status every minute (every 6 iterations)
-            if [ $((i % 6)) -eq 0 ]; then
-              minutes=$((i / 6))
+            # Print status every 2 minutes (every 4 iterations)
+            if [ $((i % 4)) -eq 0 ]; then
+              minutes=$((i * 30 / 60))
               hours=$((minutes / 60))
               remaining_minutes=$((minutes % 60))
-              echo "[$(date '+%H:%M:%S')] ⏱️  Running for ${hours}h ${remaining_minutes}m - still active"
+              echo "[$(date '+%H:%M:%S')] ⏱️  Running for ${hours}h ${remaining_minutes}m - Desktop still active"
             fi
           done
           
