@@ -17,7 +17,7 @@ on:
 jobs:
   linux-desktop:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours maximum
+    timeout-minutes: 360
     
     steps:
       - name: Checkout repository
@@ -32,14 +32,19 @@ jobs:
             xfce4-goodies \
             dbus-x11 \
             xfonts-base \
+            xfonts-100dpi \
+            xfonts-75dpi \
             tigervnc-standalone-server \
             tigervnc-viewer \
-            tigervnc-common \
+            tigervnc-tools \
             novnc \
             websockify \
+            python3-websockify \
             curl \
             wget \
             net-tools \
+            openssl \
+            expect \
             --no-install-recommends
           sudo apt-get clean
           sudo apt-get autoremove -y
@@ -49,53 +54,63 @@ jobs:
           # Create VNC config directory
           mkdir -p ~/.vnc
           
-          # Set VNC password
-          echo "${{ github.event.inputs.VNC_PASSWORD }}" | vncpasswd -f > ~/.vnc/passwd
-          chmod 600 ~/.vnc/passwd
+          # Set VNC password using expect to interact with vncpasswd
+          VNC_PASS="${{ github.event.inputs.VNC_PASSWORD }}"
+          
+          # Use expect to set password interactively
+          expect << EOF
+          spawn vncpasswd
+          expect "Password:"
+          send "$VNC_PASS\r"
+          expect "Verify:"
+          send "$VNC_PASS\r"
+          expect "Would you like to enter a view-only password"
+          send "n\r"
+          expect eof
+          EOF
           
           # Create xstartup script for XFCE
-          cat > ~/.vnc/xstartup << 'EOF'
+          cat > ~/.vnc/xstartup << 'XEOF'
           #!/bin/bash
           unset SESSION_MANAGER
           unset DBUS_SESSION_BUS_ADDRESS
-          
-          # Start XFCE
           exec startxfce4
-          EOF
+          XEOF
           
           chmod +x ~/.vnc/xstartup
+          echo "VNC configured successfully"
 
-      - name: Start VNC and noVNC Servers
+      - name: Start VNC Server
         run: |
           # Kill any existing VNC sessions
           vncserver -kill :1 2>/dev/null || true
           
-          # Start VNC server
+          # Start VNC server with specified geometry
           vncserver :1 \
             -geometry ${{ github.event.inputs.SCREEN_RESOLUTION }} \
             -depth 24 \
-            -localhost no \
-            -rfbport 5901
+            -localhost no
           
           sleep 3
           
-          # Start noVNC (web-based VNC client)
-          # noVNC will be accessible on port 6080
-          websockify --web=/usr/share/novnc --cert=self.pem --key=self.pem --ssl-only --ssl-version=tlsv1_2 -D 6080 localhost:5901 &
+          # Verify VNC is running
+          if ! pgrep -f "Xtigervnc" > /dev/null; then
+            echo "Error: VNC server failed to start"
+            exit 1
+          fi
           
-          sleep 2
-          
-          # Generate self-signed SSL certificate for noVNC
+          echo "VNC server started on port 5901"
+
+      - name: Start noVNC Server
+        run: |
+          # Generate self-signed SSL certificate
           openssl req -x509 -nodes -newkey rsa:2048 \
             -keyout ~/.vnc/novnc.pem \
             -out ~/.vnc/novnc.pem \
             -days 1 \
-            -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost" 2>/dev/null
+            -subj "/CN=localhost" 2>/dev/null
           
-          # Restart websockify with SSL
-          pkill websockify 2>/dev/null || true
-          sleep 1
-          
+          # Start websockify for noVNC
           websockify --web=/usr/share/novnc \
             --cert=$HOME/.vnc/novnc.pem \
             --ssl-only \
@@ -104,24 +119,40 @@ jobs:
             localhost:5901
           
           sleep 2
+          
+          # Verify websockify is running
+          if ! pgrep -f "websockify" > /dev/null; then
+            echo "Error: noVNC server failed to start"
+            exit 1
+          fi
+          
+          echo "noVNC server started on port 6080"
 
       - name: Setup ngrok Tunnel
         run: |
           # Download and install ngrok
-          curl -s https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | sudo tar xz -C /usr/local/bin
+          curl -sL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | sudo tar xz -C /usr/local/bin
           
-          # Start ngrok tunnel for noVNC (port 6080)
-          ngrok http 6080 --log=stdout > ngrok.log 2>&1 &
+          # Start ngrok tunnel for noVNC
+          ngrok http 6080 --log=stdout > /tmp/ngrok.log 2>&1 &
           
-          sleep 10
+          # Wait for ngrok to start
+          sleep 15
           
-          # Get the public URL
-          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"https://[^"]*' | grep -o 'https://[^"]*' | head -1)
+          # Get the public URL with retries
+          for i in 1 2 3 4 5; do
+            NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"https://[^"]*' | grep -o 'https://[^"]*' | head -1)
+            if [ ! -z "$NGROK_URL" ]; then
+              break
+            fi
+            echo "Waiting for ngrok... attempt $i"
+            sleep 5
+          done
           
           if [ -z "$NGROK_URL" ]; then
-            echo "Waiting for ngrok to start..."
-            sleep 10
-            NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"https://[^"]*' | grep -o 'https://[^"]*' | head -1)
+            echo "Error: Could not get ngrok URL"
+            cat /tmp/ngrok.log
+            exit 1
           fi
           
           echo ""
@@ -136,28 +167,22 @@ jobs:
           echo "   Password: ${{ github.event.inputs.VNC_PASSWORD }}"
           echo "   Resolution: ${{ github.event.inputs.SCREEN_RESOLUTION }}"
           echo ""
-          echo "🖥️  VNC Client Access:"
-          echo "   Host: localhost"
-          echo "   Port: 5901"
+          echo "⚠️  IMPORTANT: Click 'Advanced' -> 'Proceed' if you see a SSL warning"
           echo ""
           echo "⏱️  Session will remain active for 6 hours"
           echo "========================================"
           echo ""
 
-      - name: Keep runner alive (6 hours max)
+      - name: Keep runner alive
         run: |
-          # Calculate iterations: 6 hours = 21600 seconds / 30 second intervals = 720 iterations
+          echo "Desktop is running. Keeping alive for 6 hours..."
           for i in $(seq 1 720); do
             sleep 30
-            
-            # Print status every 2 minutes (every 4 iterations)
             if [ $((i % 4)) -eq 0 ]; then
               minutes=$((i * 30 / 60))
               hours=$((minutes / 60))
               remaining_minutes=$((minutes % 60))
-              echo "[$(date '+%H:%M:%S')] ⏱️  Running for ${hours}h ${remaining_minutes}m - Desktop still active"
+              echo "[$(date '+%H:%M:%S')] Running for ${hours}h ${remaining_minutes}m"
             fi
           done
-          
-          echo ""
-          echo "⏹️ Maximum runtime reached (6 hours). Shutting down..."
+          echo "Maximum runtime reached. Shutting down..."
