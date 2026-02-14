@@ -1,0 +1,99 @@
+name: Linux Desktop with Chrome Remote Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      CRP_CODE:
+        description: 'Chrome Remote Desktop authorization code (get from https://remotedesktop.google.com/headless)'
+        required: true
+        type: string
+
+jobs:
+  linux-desktop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours maximum
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install XFCE4 Desktop Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xfce4 \
+            xfce4-terminal \
+            xfce4-goodies \
+            dbus-x11 \
+            xfonts-base \
+            xfonts-100dpi \
+            xfonts-75dpi \
+            xfonts-cyrillic \
+            xfonts-scalable \
+            pulseaudio \
+            pavucontrol \
+            curl \
+            wget \
+            --no-install-recommends
+          sudo apt-get clean
+          sudo apt-get autoremove -y
+
+      - name: Install Chrome Remote Desktop
+        run: |
+          wget -q https://dl.google.com/linux/direct/chrome-remote-desktop_current_amd64.deb -O /tmp/chrome-remote-desktop.deb
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/chrome-remote-desktop.deb || sudo apt-get install -fy
+          rm -f /tmp/chrome-remote-desktop.deb
+
+      - name: Configure and Start Chrome Remote Desktop
+        run: |
+          # Add user to chrome-remote-desktop group
+          sudo usermod -a -G chrome-remote-desktop $USER
+          
+          # Create session file for XFCE
+          echo 'xfce4-session' > ~/.chrome-remote-desktop-session
+          
+          # Start Chrome Remote Desktop with the provided code
+          export CRP_CODE="${{ github.event.inputs.CRP_CODE }}"
+          
+          # Configure the host
+          DISPLAY= /opt/google/chrome-remote-desktop/start-host \
+            --code="$CRP_CODE" \
+            --redirect-url="https://remotedesktop.google.com/_/oauthredirect" \
+            --name="GitHub Actions Linux Desktop" \
+            --pin=123456
+
+      - name: Verify Chrome Remote Desktop is Running
+        run: |
+          sleep 10
+          echo "=== Chrome Remote Desktop Status ==="
+          ps aux | grep chrome-remote-desktop | grep -v grep || echo "Process not found"
+          
+          echo ""
+          echo "=== Connection Info ==="
+          echo "Visit: https://remotedesktop.google.com/access"
+          echo "Look for: GitHub Actions Linux Desktop"
+          echo "PIN: 123456"
+          echo ""
+
+      - name: Keep runner alive (6 hours max)
+        run: |
+          echo "🖥️ Linux Desktop is ready!"
+          echo "Connect via: https://remotedesktop.google.com/access"
+          echo "This runner will stay active for 6 hours."
+          echo ""
+          
+          # Calculate iterations: 6 hours = 21600 seconds / 10 second intervals = 2160 iterations
+          for i in $(seq 1 2160); do
+            sleep 10
+            
+            # Print status every minute (every 6 iterations)
+            if [ $((i % 6)) -eq 0 ]; then
+              minutes=$((i / 6))
+              hours=$((minutes / 60))
+              remaining_minutes=$((minutes % 60))
+              echo "[$(date '+%H:%M:%S')] ⏱️  Running for ${hours}h ${remaining_minutes}m - still active"
+            fi
+          done
+          
+          echo ""
+          echo "⏹️ Maximum runtime reached (6 hours). Shutting down..."
