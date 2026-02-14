@@ -46,11 +46,18 @@ jobs:
 
       - name: Configure and Start Chrome Remote Desktop
         run: |
+          # Create the chrome-remote-desktop group if it doesn't exist
+          sudo groupadd -f chrome-remote-desktop
+          
           # Add user to chrome-remote-desktop group
           sudo usermod -a -G chrome-remote-desktop $USER
           
           # Create session file for XFCE
           echo 'xfce4-session' > ~/.chrome-remote-desktop-session
+          
+          # Create necessary directories
+          mkdir -p ~/.config/chrome-remote-desktop
+          mkdir -p ~/.cache/chrome-remote-desktop
           
           # Start Chrome Remote Desktop with the provided code
           export CRP_CODE="${{ github.event.inputs.CRP_CODE }}"
