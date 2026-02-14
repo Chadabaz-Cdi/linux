@@ -128,30 +128,33 @@ jobs:
           
           echo "noVNC server started on port 6080"
 
-      - name: Setup ngrok Tunnel
+      - name: Setup Cloudflare Tunnel
         run: |
-          # Download and install ngrok
-          curl -sL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | sudo tar xz -C /usr/local/bin
+          # Download cloudflared
+          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+          sudo mv /tmp/cloudflared /usr/local/bin/
           
-          # Start ngrok tunnel for noVNC
-          ngrok http 6080 --log=stdout > /tmp/ngrok.log 2>&1 &
+          # Start cloudflare tunnel for noVNC (runs in background)
+          cloudflared tunnel --url http://localhost:6080 > /tmp/cloudflare.log 2>&1 &
           
-          # Wait for ngrok to start
+          # Wait for tunnel to establish
           sleep 15
           
-          # Get the public URL with retries
-          for i in 1 2 3 4 5; do
-            NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"https://[^"]*' | grep -o 'https://[^"]*' | head -1)
-            if [ ! -z "$NGROK_URL" ]; then
+          # Extract the public URL with retries
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            TUNNEL_URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /tmp/cloudflare.log | head -1)
+            if [ ! -z "$TUNNEL_URL" ]; then
               break
             fi
-            echo "Waiting for ngrok... attempt $i"
-            sleep 5
+            echo "Waiting for Cloudflare tunnel... attempt $i/10"
+            sleep 3
           done
           
-          if [ -z "$NGROK_URL" ]; then
-            echo "Error: Could not get ngrok URL"
-            cat /tmp/ngrok.log
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "Error: Could not get Cloudflare tunnel URL"
+            echo "Cloudflare log:"
+            cat /tmp/cloudflare.log
             exit 1
           fi
           
@@ -161,7 +164,7 @@ jobs:
           echo "========================================"
           echo ""
           echo "🔗 Web Browser Access (noVNC):"
-          echo "   $NGROK_URL/vnc.html"
+          echo "   $TUNNEL_URL/vnc.html"
           echo ""
           echo "📋 Connection Details:"
           echo "   Password: ${{ github.event.inputs.VNC_PASSWORD }}"

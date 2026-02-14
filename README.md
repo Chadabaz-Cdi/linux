@@ -29,14 +29,16 @@ After ~30 seconds, the workflow logs will display:
 ========================================
 
 🔗 Web Browser Access (noVNC):
-   https://xxxx.ngrok.io/vnc.html
+   https://xxxx.trycloudflare.com/vnc.html
 
 📋 Connection Details:
    Password: your_password
    Resolution: 1920x1080
 ```
 
-**Click the ngrok URL** to open the desktop in your browser!
+**Click the Cloudflare URL** to open the desktop in your browser!
+
+✅ **No signup required!** Uses free Cloudflare Tunnel (no account needed).
 
 ### 3. Connect
 
@@ -59,7 +61,7 @@ After ~30 seconds, the workflow logs will display:
 - **Remote Access**: 
   - **noVNC** - Browser-based (no installation needed)
   - **TigerVNC** - Standard VNC protocol
-- **Tunnel**: ngrok for public access
+- **Tunnel**: Cloudflare Tunnel (free, no account needed)
 - **Runtime**: 6 hours maximum (GitHub Actions limit)
 
 ## Included Software
